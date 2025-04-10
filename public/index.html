@@ -13,19 +13,21 @@
     .dropzone.active {
       background-color: #eef2ff;
     }
-    .error-message {
-      animation: fadeIn 0.3s;
+    .notification {
+      animation: fadeInOut 5s forwards;
     }
-    @keyframes fadeIn {
-      from { opacity: 0; transform: translateY(-10px); }
-      to { opacity: 1; transform: translateY(0); }
+    @keyframes fadeInOut {
+      0% { opacity: 0; transform: translateY(-20px); }
+      10% { opacity: 1; transform: translateY(0); }
+      90% { opacity: 1; transform: translateY(0); }
+      100% { opacity: 0; transform: translateY(-20px); }
     }
   </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
   <div class="container mx-auto px-4 py-8">
-    <!-- Error Display -->
-    <div id="errorDisplay" class="hidden fixed top-4 right-4 max-w-md"></div>
+    <!-- Notification Area -->
+    <div id="notification" class="fixed top-4 right-4 w-80 z-50"></div>
 
     <!-- Project Creation -->
     <div class="bg-white rounded-xl shadow-md p-6 mb-8">
@@ -41,7 +43,7 @@
           <input type="text" id="projectName" required
                  class="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500">
         </div>
-        <button type="submit" class="bg-indigo-600 text-white px-6 py-2 rounded-lg font-medium">
+        <button type="submit" id="createBtn" class="bg-indigo-600 text-white px-6 py-2 rounded-lg font-medium">
           Create Project
         </button>
       </form>
@@ -60,7 +62,7 @@
         </div>
         <input type="file" id="fileInput" class="hidden" multiple>
       </div>
-      <div id="fileList" class="mb-4"></div>
+      <div id="fileList" class="mb-4 max-h-40 overflow-y-auto"></div>
       <button id="uploadBtn" class="bg-indigo-600 text-white px-6 py-2 rounded-lg font-medium w-full">
         Upload Files
       </button>
@@ -69,13 +71,14 @@
 
   <script>
     // DOM Elements
-    const errorDisplay = document.getElementById('errorDisplay');
+    const notification = document.getElementById('notification');
     const projectForm = document.getElementById('projectForm');
     const uploadSection = document.getElementById('uploadSection');
     const dropzone = document.getElementById('dropzone');
     const fileInput = document.getElementById('fileInput');
     const uploadBtn = document.getElementById('uploadBtn');
     const fileList = document.getElementById('fileList');
+    const createBtn = document.getElementById('createBtn');
 
     // State
     let currentProject = null;
@@ -90,6 +93,7 @@
     // Drag and Drop Events
     ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(event => {
       dropzone.addEventListener(event, preventDefaults);
+      document.addEventListener(event, preventDefaults);
     });
 
     ['dragenter', 'dragover'].forEach(event => {
@@ -133,9 +137,9 @@
 
     function updateFileList() {
       fileList.innerHTML = selectedFiles.map(file => `
-        <div class="flex items-center justify-between p-2 mb-2 bg-gray-50 rounded">
-          <span>${file.name}</span>
-          <span class="text-sm text-gray-500">${formatFileSize(file.size)}</span>
+        <div class="flex items-center justify-between p-2 mb-2 bg-gray-50 rounded border">
+          <span class="truncate">${file.name}</span>
+          <span class="text-sm text-gray-500 whitespace-nowrap ml-2">${formatFileSize(file.size)}</span>
         </div>
       `).join('');
     }
@@ -145,17 +149,16 @@
       const k = 1024;
       const sizes = ['Bytes', 'KB', 'MB', 'GB'];
       const i = Math.floor(Math.log(bytes) / Math.log(k));
-      return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(2) + ' ' + sizes[i];
     }
 
-    function showError(message) {
-      errorDisplay.innerHTML = `
-        <div class="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 error-message">
+    function showNotification(message, type = 'error') {
+      notification.innerHTML = `
+        <div class="${type === 'error' ? 'bg-red-100 border-red-500 text-red-700' : 'bg-green-100 border-green-500 text-green-700'} 
+                     border-l-4 p-4 notification">
           <p>${message}</p>
         </div>
       `;
-      errorDisplay.classList.remove('hidden');
-      setTimeout(() => errorDisplay.classList.add('hidden'), 5000);
     }
 
     async function createProject(e) {
@@ -164,10 +167,15 @@
       const username = document.getElementById('username').value.trim();
       const projectName = document.getElementById('projectName').value.trim();
 
+      createBtn.disabled = true;
+      createBtn.innerHTML = 'Creating...';
+
       try {
         const response = await fetch('/api/projects', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 
+            'Content-Type': 'application/json'
+          },
           body: JSON.stringify({ username, projectName })
         });
 
@@ -179,19 +187,25 @@
 
         currentProject = data;
         uploadSection.classList.remove('hidden');
-        projectForm.reset();
+        showNotification('Project created successfully!', 'success');
 
       } catch (err) {
-        showError(err.message);
-        console.error('Error creating project:', err);
+        showNotification(err.message);
+        console.error('Error:', err);
+      } finally {
+        createBtn.disabled = false;
+        createBtn.innerHTML = 'Create Project';
       }
     }
 
     async function uploadFiles() {
       if (!currentProject || selectedFiles.length === 0) {
-        showError('No files selected or project not created');
+        showNotification('No files selected or project not created');
         return;
       }
+
+      uploadBtn.disabled = true;
+      uploadBtn.innerHTML = 'Uploading...';
 
       const formData = new FormData();
       formData.append('projectId', currentProject.projectId);
@@ -209,27 +223,18 @@
           throw new Error(data.error || 'Failed to upload files');
         }
 
-        showError('Files uploaded successfully!', 'success');
+        showNotification('Files uploaded successfully!', 'success');
         selectedFiles = [];
         fileInput.value = '';
         fileList.innerHTML = '';
 
       } catch (err) {
-        showError(err.message);
-        console.error('Error uploading files:', err);
+        showNotification(err.message);
+        console.error('Error:', err);
+      } finally {
+        uploadBtn.disabled = false;
+        uploadBtn.innerHTML = 'Upload Files';
       }
-    }
-
-    // Helper to show success messages
-    function showError(message, type = 'error') {
-      errorDisplay.innerHTML = `
-        <div class="${type === 'error' ? 'bg-red-100 border-red-500 text-red-700' : 'bg-green-100 border-green-500 text-green-700'} 
-                     border-l-4 p-4 error-message">
-          <p>${message}</p>
-        </div>
-      `;
-      errorDisplay.classList.remove('hidden');
-      setTimeout(() => errorDisplay.classList.add('hidden'), 5000);
     }
   </script>
 </body>
