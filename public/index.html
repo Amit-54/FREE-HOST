@@ -179,12 +179,12 @@
           body: JSON.stringify({ username, projectName })
         });
 
-        const data = await response.json();
-
         if (!response.ok) {
-          throw new Error(data.error || 'Failed to create project');
+          const error = await response.json();
+          throw new Error(error.error || 'Failed to create project');
         }
 
+        const data = await response.json();
         currentProject = data;
         uploadSection.classList.remove('hidden');
         showNotification('Project created successfully!', 'success');
@@ -217,10 +217,9 @@
           body: formData
         });
 
-        const data = await response.json();
-
         if (!response.ok) {
-          throw new Error(data.error || 'Failed to upload files');
+          const error = await response.json();
+          throw new Error(error.error || 'Failed to upload files');
         }
 
         showNotification('Files uploaded successfully!', 'success');
