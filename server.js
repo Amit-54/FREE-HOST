@@ -3,27 +3,32 @@ const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
 const unzipper = require('unzipper');
-const archiver = require('archiver');
 const crypto = require('crypto');
 
 const app = express();
 const PORT = 5000;
 const STORAGE_PATH = path.join(__dirname, 'storage');
 
-// Create storage directory if not exists
-if (!fs.existsSync(STORAGE_PATH)) {
-  try {
-    fs.mkdirSync(STORAGE_PATH, { recursive: true });
-    console.log('Storage directory created');
-  } catch (err) {
-    console.error('Failed to create storage directory:', err);
-    process.exit(1);
-  }
-}
+// Enhanced JSON middleware with error handling
+app.use(express.json({
+  verify: (req, res, buf, encoding) => {
+    try {
+      JSON.parse(buf.toString('utf8'));
+    } catch (e) {
+      throw new Error('Invalid JSON received');
+    }
+  },
+  limit: '10mb' // Set appropriate limit
+}));
 
-app.use(express.json());
+// Static files middleware
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/p', express.static(path.join(STORAGE_PATH, 'projects')));
+
+// Create storage directory if not exists
+if (!fs.existsSync(STORAGE_PATH)) {
+  fs.mkdirSync(STORAGE_PATH, { recursive: true });
+}
 
 // Configure file upload
 const upload = multer({
@@ -31,12 +36,7 @@ const upload = multer({
     destination: (req, file, cb) => {
       const projectDir = path.join(STORAGE_PATH, 'projects', req.body.projectId);
       if (!fs.existsSync(projectDir)) {
-        try {
-          fs.mkdirSync(projectDir, { recursive: true });
-        } catch (err) {
-          console.error('Failed to create project directory:', err);
-          return cb(new Error('Failed to create project directory'));
-        }
+        fs.mkdirSync(projectDir, { recursive: true });
       }
       cb(null, projectDir);
     },
@@ -44,17 +44,30 @@ const upload = multer({
       cb(null, file.originalname);
     }
   }),
-  limits: {
-    fileSize: 50 * 1024 * 1024 // 50MB limit
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = [
+      'text/html',
+      'text/css',
+      'application/javascript',
+      'application/x-php',
+      'application/x-python-code',
+      'application/zip',
+      'application/x-zip-compressed'
+    ];
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type'), false);
+    }
   }
 });
 
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Error:', err.message);
-  res.status(500).json({ 
+  res.status(400).json({ 
     success: false,
-    error: err.message || 'Failed to create project' 
+    error: err.message || 'Invalid request' 
   });
 });
 
@@ -63,20 +76,28 @@ function generateProjectId(username) {
   return `${username}-${crypto.randomBytes(4).toString('hex')}`;
 }
 
-// Create project endpoint
-app.post('/api/projects', (req, res, next) => {
+// Create project endpoint with proper JSON validation
+app.post('/api/projects', (req, res) => {
   try {
+    if (!req.is('application/json')) {
+      throw new Error('Content-Type must be application/json');
+    }
+
     const { username, projectName } = req.body;
     
-    if (!username || !projectName) {
-      throw new Error('Username and project name are required');
+    if (!username || typeof username !== 'string') {
+      throw new Error('Valid username is required');
+    }
+
+    if (!projectName || typeof projectName !== 'string') {
+      throw new Error('Valid project name is required');
     }
 
     const projectId = generateProjectId(username);
     const projectDir = path.join(STORAGE_PATH, 'projects', projectId);
 
     if (fs.existsSync(projectDir)) {
-      throw new Error('Project directory already exists');
+      throw new Error('Project already exists');
     }
 
     fs.mkdirSync(projectDir, { recursive: true });
@@ -88,49 +109,68 @@ app.post('/api/projects', (req, res, next) => {
     });
 
   } catch (err) {
-    next(new Error(`Failed to create project: ${err.message}`));
+    res.status(400).json({ 
+      success: false,
+      error: `Failed to create project: ${err.message}`
+    });
   }
 });
 
-// File upload endpoint
-app.post('/api/upload', upload.array('files'), async (req, res, next) => {
-  try {
-    const { projectId } = req.body;
-    
-    if (!projectId) {
-      throw new Error('Project ID is required');
+// File upload endpoint with proper error handling
+app.post('/api/upload', (req, res, next) => {
+  upload.array('files')(req, res, (err) => {
+    if (err) {
+      return res.status(400).json({ 
+        success: false,
+        error: `File upload failed: ${err.message}`
+      });
     }
-
-    const projectDir = path.join(STORAGE_PATH, 'projects', projectId);
     
-    if (!fs.existsSync(projectDir)) {
-      throw new Error('Project does not exist');
-    }
-
-    // Process ZIP files
-    await Promise.all(req.files.map(file => {
-      if (file.originalname.endsWith('.zip')) {
-        return new Promise((resolve, reject) => {
-          fs.createReadStream(file.path)
-            .pipe(unzipper.Extract({ path: projectDir }))
-            .on('close', () => {
-              fs.unlinkSync(file.path);
-              resolve();
-            })
-            .on('error', reject);
-        });
+    try {
+      const { projectId } = req.body;
+      
+      if (!projectId) {
+        throw new Error('Project ID is required');
       }
-      return Promise.resolve();
-    }));
 
-    res.json({ 
-      success: true,
-      message: 'Files uploaded successfully'
-    });
+      const projectDir = path.join(STORAGE_PATH, 'projects', projectId);
+      
+      if (!fs.existsSync(projectDir)) {
+        throw new Error('Project does not exist');
+      }
 
-  } catch (err) {
-    next(new Error(`Failed to upload files: ${err.message}`));
-  }
+      // Process files
+      Promise.all(req.files.map(file => {
+        if (file.originalname.endsWith('.zip')) {
+          return new Promise((resolve, reject) => {
+            fs.createReadStream(file.path)
+              .pipe(unzipper.Extract({ path: projectDir }))
+              .on('close', () => {
+                fs.unlinkSync(file.path);
+                resolve();
+              })
+              .on('error', reject);
+          });
+        }
+        return Promise.resolve();
+      }))
+      .then(() => {
+        res.json({ 
+          success: true,
+          message: 'Files uploaded successfully'
+        });
+      })
+      .catch(error => {
+        throw error;
+      });
+
+    } catch (err) {
+      res.status(400).json({ 
+        success: false,
+        error: `Failed to process files: ${err.message}`
+      });
+    }
+  });
 });
 
 // Start server
